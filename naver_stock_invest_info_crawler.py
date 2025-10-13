@@ -123,17 +123,60 @@ class NaverFinancePERCrawlerForLambda:
             return False
     
     async def close_browser(self):
-        """브라우저 종료"""
+        """브라우저 종료 - 강화된 버전 (타임아웃 및 오류 처리)"""
+        cleanup_errors = []
+
+        # Page 정리
         try:
             if self.page:
-                await self.page.close()
-            if self.browser:
-                await self.browser.close()
-            if hasattr(self, 'playwright'):
-                await self.playwright.stop()
-            print("✅ 브라우저 종료 완료")
+                try:
+                    await asyncio.wait_for(self.page.close(), timeout=5)
+                    print("✅ Page closed")
+                except asyncio.TimeoutError:
+                    cleanup_errors.append("Page close timeout (5s)")
+                except Exception as e:
+                    cleanup_errors.append(f"Page close error: {e}")
         except Exception as e:
-            print(f"❌ 브라우저 종료 중 오류: {str(e)}")
+            cleanup_errors.append(f"Page cleanup error: {e}")
+
+        # Browser 정리
+        try:
+            if self.browser:
+                try:
+                    await asyncio.wait_for(self.browser.close(), timeout=10)
+                    print("✅ Browser closed")
+                except asyncio.TimeoutError:
+                    cleanup_errors.append("Browser close timeout (10s)")
+                except Exception as e:
+                    cleanup_errors.append(f"Browser close error: {e}")
+        except Exception as e:
+            cleanup_errors.append(f"Browser cleanup error: {e}")
+
+        # Playwright 정리
+        try:
+            if hasattr(self, 'playwright'):
+                try:
+                    await asyncio.wait_for(self.playwright.stop(), timeout=10)
+                    print("✅ Playwright stopped")
+                except asyncio.TimeoutError:
+                    cleanup_errors.append("Playwright stop timeout (10s)")
+                except Exception as e:
+                    cleanup_errors.append(f"Playwright stop error: {e}")
+        except Exception as e:
+            cleanup_errors.append(f"Playwright cleanup error: {e}")
+
+        # 최종 결과 출력
+        if cleanup_errors:
+            print(f"⚠️ Cleanup completed with warnings: {'; '.join(cleanup_errors)}")
+        else:
+            print("✅ 브라우저 종료 완료")
+
+        # Lambda/MWAA 환경에서 좀비 프로세스 방지
+        import os
+        if os.environ.get('AWS_LAMBDA_FUNCTION_NAME') or os.environ.get('AIRFLOW_HOME'):
+            print("🔧 Lambda/MWAA 환경: 추가 정리 작업 수행")
+            # 추가 대기 시간으로 프로세스 완전 종료 보장
+            await asyncio.sleep(1)
     
     async def crawl_per_eps_data(self, stock_code="004150", company_name="한솔홀딩스"):
         """

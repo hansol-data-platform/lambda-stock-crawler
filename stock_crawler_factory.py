@@ -174,7 +174,33 @@ def handle_quarter_crawler(event, context):
         if os.name == 'nt':
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-        crawl_result = asyncio.run(crawl_multiple_stocks_direct(stocks, output_dir, "분기", s3_bucket))
+        # MWAA/Airflow 환경에서 이벤트 루프 충돌 방지
+        try:
+            # 기존 이벤트 루프 확인
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # MWAA 환경: 이미 실행 중인 루프가 있음
+                print("🔄 [MWAA] 기존 이벤트 루프 감지 - nest_asyncio 적용")
+                try:
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                    crawl_result = asyncio.run(crawl_multiple_stocks_direct(stocks, output_dir, "분기", s3_bucket))
+                except ImportError:
+                    print("⚠️ nest_asyncio 미설치 - run_until_complete 사용")
+                    # nest_asyncio 없으면 새 태스크로 실행
+                    crawl_result = loop.run_until_complete(crawl_multiple_stocks_direct(stocks, output_dir, "분기", s3_bucket))
+            else:
+                # 일반 환경: 새 이벤트 루프 생성
+                crawl_result = asyncio.run(crawl_multiple_stocks_direct(stocks, output_dir, "분기", s3_bucket))
+        except RuntimeError as e:
+            # 이벤트 루프 관련 오류 시 새 루프 생성
+            print(f"⚠️ 이벤트 루프 오류 ({e}) - 새 루프 생성")
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                crawl_result = new_loop.run_until_complete(crawl_multiple_stocks_direct(stocks, output_dir, "분기", s3_bucket))
+            finally:
+                new_loop.close()
 
         # 크롤링 결과를 JSON 직렬화 가능한 형태로 요약
         if crawl_result:
@@ -301,7 +327,33 @@ def handle_annual_crawler(event, context):
         if os.name == 'nt':
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-        crawl_result = asyncio.run(crawl_multiple_stocks_direct(stocks, output_dir, "연간", s3_bucket))
+        # MWAA/Airflow 환경에서 이벤트 루프 충돌 방지
+        try:
+            # 기존 이벤트 루프 확인
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # MWAA 환경: 이미 실행 중인 루프가 있음
+                print("🔄 [MWAA] 기존 이벤트 루프 감지 - nest_asyncio 적용")
+                try:
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                    crawl_result = asyncio.run(crawl_multiple_stocks_direct(stocks, output_dir, "연간", s3_bucket))
+                except ImportError:
+                    print("⚠️ nest_asyncio 미설치 - run_until_complete 사용")
+                    # nest_asyncio 없으면 새 태스크로 실행
+                    crawl_result = loop.run_until_complete(crawl_multiple_stocks_direct(stocks, output_dir, "연간", s3_bucket))
+            else:
+                # 일반 환경: 새 이벤트 루프 생성
+                crawl_result = asyncio.run(crawl_multiple_stocks_direct(stocks, output_dir, "연간", s3_bucket))
+        except RuntimeError as e:
+            # 이벤트 루프 관련 오류 시 새 루프 생성
+            print(f"⚠️ 이벤트 루프 오류 ({e}) - 새 루프 생성")
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                crawl_result = new_loop.run_until_complete(crawl_multiple_stocks_direct(stocks, output_dir, "연간", s3_bucket))
+            finally:
+                new_loop.close()
 
         # 크롤링 결과를 JSON 직렬화 가능한 형태로 요약
         if crawl_result:

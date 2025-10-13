@@ -938,19 +938,73 @@ class PlaywrightStockCrawler:
 
             
     async def cleanup(self):
-        """브라우저 종료 및 정리"""
+        """브라우저 종료 및 정리 - 강화된 버전 (타임아웃 및 오류 처리)"""
+        cleanup_errors = []
+
+        # Page 정리
         try:
             if self.page:
-                await self.page.close()
-            if hasattr(self, 'context') and self.context:
-                await self.context.close()
-            if self.browser:
-                await self.browser.close()
-            if hasattr(self, 'playwright'):
-                await self.playwright.stop()
-            print("🧹 브라우저를 종료했습니다.")
+                try:
+                    await asyncio.wait_for(self.page.close(), timeout=5)
+                    print("✅ Page closed")
+                except asyncio.TimeoutError:
+                    cleanup_errors.append("Page close timeout (5s)")
+                except Exception as e:
+                    cleanup_errors.append(f"Page close error: {e}")
         except Exception as e:
-            print(f"⚠️ 브라우저 종료 중 오류: {str(e)}")
+            cleanup_errors.append(f"Page cleanup error: {e}")
+
+        # Context 정리
+        try:
+            if hasattr(self, 'context') and self.context:
+                try:
+                    await asyncio.wait_for(self.context.close(), timeout=5)
+                    print("✅ Context closed")
+                except asyncio.TimeoutError:
+                    cleanup_errors.append("Context close timeout (5s)")
+                except Exception as e:
+                    cleanup_errors.append(f"Context close error: {e}")
+        except Exception as e:
+            cleanup_errors.append(f"Context cleanup error: {e}")
+
+        # Browser 정리
+        try:
+            if self.browser:
+                try:
+                    await asyncio.wait_for(self.browser.close(), timeout=10)
+                    print("✅ Browser closed")
+                except asyncio.TimeoutError:
+                    cleanup_errors.append("Browser close timeout (10s)")
+                except Exception as e:
+                    cleanup_errors.append(f"Browser close error: {e}")
+        except Exception as e:
+            cleanup_errors.append(f"Browser cleanup error: {e}")
+
+        # Playwright 정리
+        try:
+            if hasattr(self, 'playwright'):
+                try:
+                    await asyncio.wait_for(self.playwright.stop(), timeout=10)
+                    print("✅ Playwright stopped")
+                except asyncio.TimeoutError:
+                    cleanup_errors.append("Playwright stop timeout (10s)")
+                except Exception as e:
+                    cleanup_errors.append(f"Playwright stop error: {e}")
+        except Exception as e:
+            cleanup_errors.append(f"Playwright cleanup error: {e}")
+
+        # 최종 결과 출력
+        if cleanup_errors:
+            print(f"⚠️ Cleanup completed with warnings: {'; '.join(cleanup_errors)}")
+        else:
+            print("🧹 브라우저를 완전히 종료했습니다.")
+
+        # Lambda/MWAA 환경에서 좀비 프로세스 방지
+        import os
+        if os.environ.get('AWS_LAMBDA_FUNCTION_NAME') or os.environ.get('AIRFLOW_HOME'):
+            print("🔧 Lambda/MWAA 환경: 추가 정리 작업 수행")
+            # 추가 대기 시간으로 프로세스 완전 종료 보장
+            await asyncio.sleep(1)
     
     async def close_browser(self):
         """브라우저 정리 (별칭 메서드)"""
@@ -1491,17 +1545,16 @@ async def crawl_multiple_stocks(stocks_data, output_dir="./crawl_results", perio
     # 전체 데이터를 하나의 CSV로 저장 후 변환
     if combined_csv_data:
         combined_df = pd.concat(combined_csv_data, ignore_index=True)
-        
+
         # 데이터 변환 (컬럼 → 행)
         print(f"\n🔄 전체 데이터 변환 중... (기간: {period_type})")
-        
-        # 임시 크롤러 객체 생성 (변환 메소드 사용을 위해)
+
+        # 임시 크롤러 객체 생성 (변환 메소드 사용을 위해) - 한 번만 생성
         temp_crawler = PlaywrightStockCrawler()
         transformed_df = temp_crawler.transform_to_row_format(combined_df, period_type)
-        
+
         if not transformed_df.empty:
-            # yyyymm별로 데이터 분리하여 저장
-            temp_crawler = PlaywrightStockCrawler()
+            # yyyymm별로 데이터 분리하여 저장 (같은 객체 재사용)
             temp_crawler.save_data_by_yyyymm(transformed_df, output_dir, period_type, s3_bucket, save_local)
         else:
             print("❌ 데이터 변환에 실패했습니다.")
@@ -1546,9 +1599,29 @@ async def crawl_multiple_stocks_direct(stocks_data, output_dir="./crawl_results"
         print(f"[DIRECT] {len(stocks_data)}개 회사 정보로 크롤링을 시작합니다.")
         print(f"[PERIOD] 기간 타입: {period_type}")
 
-        # 다중 크롤링 실행
-        return await crawl_multiple_stocks(stocks_data, output_dir, period_type, s3_bucket, save_local)
+        # 전체 크롤링에 타임아웃 설정 (Lambda 최대 15분 고려하여 14분으로 설정)
+        # MWAA 환경에서는 더 긴 타임아웃 사용 가능
+        timeout_seconds = 840  # 14분 (Lambda 안전 마진)
 
+        # MWAA 환경 감지
+        if os.environ.get('AIRFLOW_HOME'):
+            timeout_seconds = 3600  # MWAA: 60분
+            print(f"[MWAA] MWAA 환경 감지 - 타임아웃: {timeout_seconds}초")
+        else:
+            print(f"[TIMEOUT] 크롤링 타임아웃: {timeout_seconds}초")
+
+        # 다중 크롤링 실행 (타임아웃 적용)
+        return await asyncio.wait_for(
+            crawl_multiple_stocks(stocks_data, output_dir, period_type, s3_bucket, save_local),
+            timeout=timeout_seconds
+        )
+
+    except asyncio.TimeoutError:
+        import traceback
+        error_msg = f"[TIMEOUT] 크롤링 타임아웃 ({timeout_seconds}초 초과)"
+        print(error_msg)
+        print(f"[ERROR] {len(stocks_data)}개 종목 중 일부만 완료되었을 수 있습니다.")
+        raise Exception(error_msg)
     except Exception as e:
         import traceback
         print(f"[ERROR] 직접 크롤러 실행 중 오류 발생: {str(e)}")
