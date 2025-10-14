@@ -352,6 +352,9 @@ docker build -f Dockerfile.pw -t stock-crawler .
 
 ### 태그 설정
 docker tag stock-crawler:latest 818263291911.dkr.ecr.ap-northeast-2.amazonaws.com/youngjunlee/test-stock-crawler:latest
+docker tag stock-crawler:latest 818263291911.dkr.ecr.ap-northeast-2.amazonaws.com/hds-dap-dev-an2-ecr-naver-stock-crawler:latest
 
 ### 푸시
 docker push 818263291911.dkr.ecr.ap-northeast-2.amazonaws.com/youngjunlee/test-stock-crawler:latest
+
+docker push 818263291911.dkr.ecr.ap-northeast-2.amazonaws.com/hds-dap-dev-an2-ecr-naver-stock-crawler:latest
