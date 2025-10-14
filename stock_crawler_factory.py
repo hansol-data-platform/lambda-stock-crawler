@@ -59,6 +59,7 @@ def factory_lambda_handler(event, context):
         elif crawler_type == 'annual':
             return handle_annual_crawler(event_with_env, context)
         else:
+            print(f"❌ [MWAA] 지원하지 않는 크롤러 타입: {crawler_type}")
             return {
                 'statusCode': 400,
                 'headers': {
@@ -70,8 +71,9 @@ def factory_lambda_handler(event, context):
                     'supported_types': ['daily', 'quarter', 'annual']
                 }, ensure_ascii=False, indent=2)
             }
-            
+
     except Exception as e:
+        print(f"❌ [MWAA] 팩토리 실행 중 오류: {str(e)}")
         return {
             'statusCode': 500,
             'headers': {
@@ -148,6 +150,7 @@ def handle_quarter_crawler(event, context):
 
             print(f"📋 람다 펑션에서 {len(stocks)}개 유효한 종목 로드 완료")
         except Exception as e:
+            print(f"❌ [MWAA] 종목 목록 로드 실패: {str(e)}")
             return {
                 'statusCode': 500,
                 'headers': {
@@ -158,7 +161,7 @@ def handle_quarter_crawler(event, context):
                     'error': f'람다 펑션에서 종목 목록 로드 실패: {str(e)}'
                 }, ensure_ascii=False, indent=2)
             }
-        
+
         # 분기별 크롤링 실행
         print("🚀 분기별 재무정보 크롤링 시작")
 
@@ -223,21 +226,29 @@ def handle_quarter_crawler(event, context):
             "message": "S3 업로드는 크롤링 함수 내부에서 처리됨"
         }
 
+        # MWAA boto3 Lambda invoke 호환 형식으로 반환
+        print("================================================================================")
+        print("🎯 [MWAA] Lambda 실행 완료 - 응답 반환")
+        result_data = {
+            'success': True,
+            'crawler_type': 'quarter',
+            'crawl_result': summary_result,
+            's3_upload': s3_upload_result,
+            'crawl_time': datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S")
+        }
+        print(f"🎯 [MWAA] 응답 데이터: {json.dumps(result_data, ensure_ascii=False)}")
+        print("================================================================================")
+
         return {
             'statusCode': 200,
             'headers': {
                 'Content-Type': 'application/json; charset=utf-8'
             },
-            'body': json.dumps({
-                'success': True,
-                'crawler_type': 'quarter',
-                'crawl_result': summary_result,
-                's3_upload': s3_upload_result,
-                'crawl_time': datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S")
-            }, ensure_ascii=False, indent=2)
+            'body': json.dumps(result_data, ensure_ascii=False, indent=2)
         }
         
     except Exception as e:
+        print(f"❌ [MWAA] 분기별 크롤러 실행 중 오류: {str(e)}")
         return {
             'statusCode': 500,
             'headers': {
@@ -301,6 +312,7 @@ def handle_annual_crawler(event, context):
 
             print(f"📋 람다 펑션에서 {len(stocks)}개 유효한 종목 로드 완료")
         except Exception as e:
+            print(f"❌ [MWAA] 종목 목록 로드 실패: {str(e)}")
             return {
                 'statusCode': 500,
                 'headers': {
@@ -311,7 +323,7 @@ def handle_annual_crawler(event, context):
                     'error': f'람다 펑션에서 종목 목록 로드 실패: {str(e)}'
                 }, ensure_ascii=False, indent=2)
             }
-        
+
         # 연간 크롤링 실행
         print("🚀 연간 재무정보 크롤링 시작")
 
@@ -376,21 +388,29 @@ def handle_annual_crawler(event, context):
             "message": "S3 업로드는 크롤링 함수 내부에서 처리됨"
         }
 
+        # MWAA boto3 Lambda invoke 호환 형식으로 반환
+        print("================================================================================")
+        print("🎯 [MWAA] Lambda 실행 완료 - 응답 반환")
+        result_data = {
+            'success': True,
+            'crawler_type': 'annual',
+            'crawl_result': summary_result,
+            's3_upload': s3_upload_result,
+            'crawl_time': datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S")
+        }
+        print(f"🎯 [MWAA] 응답 데이터: {json.dumps(result_data, ensure_ascii=False)}")
+        print("================================================================================")
+
         return {
             'statusCode': 200,
             'headers': {
                 'Content-Type': 'application/json; charset=utf-8'
             },
-            'body': json.dumps({
-                'success': True,
-                'crawler_type': 'annual',
-                'crawl_result': summary_result,
-                's3_upload': s3_upload_result,
-                'crawl_time': datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S")
-            }, ensure_ascii=False, indent=2)
+            'body': json.dumps(result_data, ensure_ascii=False, indent=2)
         }
         
     except Exception as e:
+        print(f"❌ [MWAA] 연간 크롤러 실행 중 오류: {str(e)}")
         return {
             'statusCode': 500,
             'headers': {
