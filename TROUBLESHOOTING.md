@@ -15,6 +15,13 @@
 - ✅ **1개 회사**: Task Success (빠르게 완료)
 - ❌ **10개 회사**: Task Running → 타임아웃 (8분 크롤링 완료했으나 Task는 계속 대기)
 
+### 🔬 추가 테스트 결과 (2025-10-15)
+**회사 목록 개수 조정 테스트:**
+- ✅ **4분 12초 (252초)**: DAG Task Success
+- ❌ **6분 35초 (395초)**: DAG Task Running → 타임아웃
+
+**→ 타임아웃 임계점: 약 5분(300초) 정도로 추정**
+
 ---
 
 ## 🔍 원인 분석
@@ -60,8 +67,65 @@ return {
 - **boto3 read_timeout**: 800초 (13분) - `common.py:406`
 - **Lambda 실행 시간**: ~8분 (503초)
 - **MWAA Task 실행 시간**: 19분+ (멈춤)
+- **🎯 실제 타임아웃 임계점**: ~5분(300초) - 테스트로 확인됨
 
-→ **MWAA Task 레벨의 execution_timeout이 더 짧게 설정되어 있을 가능성**
+→ **MWAA Task 레벨의 execution_timeout이 약 5분(300초)로 설정되어 있을 가능성**
+
+### 4. 타임아웃 설정 의심 지점
+
+#### 🔴 가능성 높음
+1. **DAG 파일 `DEFAULT_ARGS`**
+   ```python
+   # hds_dap_stock_info_pipeline_annual_quater_v1.py
+   DEFAULT_ARGS = {
+       'execution_timeout': timedelta(minutes=5),  # ← 5분 설정 의심
+   }
+   ```
+   - Task별 기본 타임아웃 설정
+   - 가장 일반적인 설정 위치
+
+2. **Task 정의 시 직접 설정**
+   ```python
+   # DAG 파일 내 PythonOperator
+   PythonOperator(
+       task_id='hds_sap_stock_ingest_quarter',
+       python_callable=run_lambda_task,
+       execution_timeout=timedelta(minutes=5),  # ← 개별 Task 타임아웃
+   )
+   ```
+   - 개별 Task에 직접 설정된 경우
+
+#### 🟡 가능성 중간
+3. **Airflow 전역 설정 (airflow.cfg)**
+   ```ini
+   [core]
+   default_task_execution_timeout = 300  # 5분(초 단위)
+   ```
+   - MWAA 환경 전역 설정
+   - 모든 DAG에 기본값 적용
+
+4. **DAG 레벨 설정**
+   ```python
+   with DAG(
+       dag_id='hds_dap_stock_info_pipeline_annual_quater_v1',
+       default_args=DEFAULT_ARGS,
+       dagrun_timeout=timedelta(minutes=30),  # DAG 전체 타임아웃
+   ):
+   ```
+   - DAG 전체 실행 타임아웃 (Task별 타임아웃과 다름)
+
+#### 🟢 가능성 낮음
+5. **MWAA 환경 설정 (AWS Console)**
+   - MWAA 환경 구성에서 설정된 제약
+   - 보통 이렇게 짧게 설정하지 않음
+
+6. **common.py의 wrapper 함수**
+   ```python
+   # common.py - run_lambda_task()
+   def run_lambda_task(..., timeout=300):  # ← wrapper 레벨 타임아웃
+   ```
+   - 공통 함수에서 타임아웃 적용
+   - 문서에 common.py 수정 불가라고 했으므로 낮은 가능성
 
 ---
 
@@ -109,24 +173,46 @@ LIMIT 1  -- ✅ 1개만 반환하도록 수정
 #### 2. **영구 해결** (TODO - 내일 진행)
 DAG 담당자에게 타임아웃 연장 요청:
 
-**확인 사항:**
-1. `DEFAULT_ARGS`에 `execution_timeout` 설정 확인
+**확인 요청 사항 (우선순위 순):**
+
+1. **DAG 파일 `DEFAULT_ARGS` 확인** (가장 가능성 높음)
    ```python
+   # hds_dap_stock_info_pipeline_annual_quater_v1.py
    DEFAULT_ARGS = {
-       'execution_timeout': timedelta(minutes=10),  # ← 현재 값 확인
+       'execution_timeout': timedelta(minutes=?),  # ← 현재 값 확인
    }
    ```
+   - 현재 5분(300초)로 추정됨
 
-2. DAG 레벨 타임아웃 확인
+2. **개별 Task 설정 확인**
    ```python
-   with DAG(
-       dagrun_timeout=timedelta(minutes=30),  # ← 현재 값 확인
-   ):
+   # PythonOperator 정의 부분
+   PythonOperator(
+       task_id='hds_sap_stock_ingest_quarter',
+       execution_timeout=timedelta(minutes=?),  # ← 이 설정이 있는지 확인
+   )
+   ```
+
+3. **Airflow 전역 설정 확인** (가능하면)
+   ```ini
+   # airflow.cfg
+   [core]
+   default_task_execution_timeout = ?
    ```
 
 **요청 내용:**
-> "Lambda 크롤러가 10개 회사 처리 시 최대 10분 정도 걸립니다.
-> Task `execution_timeout`을 **15분(900초)**으로 늘려주실 수 있나요?"
+> "Lambda 크롤러 실행 시간 테스트 결과:
+> - 4분 12초: Success ✅
+> - 6분 35초: Timeout ❌
+>
+> 현재 Task execution_timeout이 약 5분(300초)로 설정된 것 같습니다.
+> Lambda 크롤러가 10개 회사 처리 시 최대 10분 정도 걸리므로,
+> Task `execution_timeout`을 **15분(900초)**으로 늘려주실 수 있나요?
+>
+> 확인이 필요한 설정:
+> 1. DAG 파일의 DEFAULT_ARGS['execution_timeout']
+> 2. PythonOperator의 개별 execution_timeout
+> 3. Airflow 전역 설정 (가능하면)"
 
 ---
 
@@ -232,22 +318,170 @@ Duration: 503999.57 ms (약 8분)
 
 ---
 
+## 🔴 새로운 문제 발견 (2025-10-15) - 해결됨 ✅
+
+### 증상: Lambda는 완료되지만 MWAA Task는 15분 타임아웃
+
+**테스트 결과:**
+- ✅ **1개 회사**: Lambda 실행 성공 (빠름)
+- ✅ **6개 회사**: Lambda 6분 30초에 완료
+- ❌ **8개 회사**: Lambda 6분 30초에 완료, 하지만 MWAA Task는 15분 타임아웃 Failed
+
+### 최종 분석
+
+**문제점:**
+- Lambda는 정상 완료 (6분 30초, statusCode 200 반환)
+- 하지만 boto3가 Lambda 응답을 읽는 중에 **15분 execution_timeout** 발생
+- DAG Task 에러 로그:
+  ```
+  File "/usr/local/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+  airflow.exceptions.AirflowTaskTimeout: Timeout, PID: 22590
+  ```
+
+**근본 원인:**
+
+1. **Lambda 응답 크기 문제**
+   - Lambda가 `json.dumps(result_data, ensure_ascii=False, indent=2)` 사용
+   - `indent=2`로 인해 응답이 불필요하게 커짐 (pretty print)
+   - boto3가 큰 응답을 읽는데 시간이 오래 걸림
+
+2. **boto3 read_timeout 설정**
+   - `DEFAULT_LAMBDA_TIMEOUT = 800` (13분)
+   - Lambda는 6분 30초에 끝났는데
+   - boto3가 HTTP 응답 읽기에 15분 넘게 걸림
+
+3. **execution_timeout 발생**
+   - MWAA Task의 15분 execution_timeout 먼저 발생
+   - boto3는 여전히 응답을 읽는 중
+   - Task Failed로 처리
+
+### 해결 방법 ✅
+
+#### 수정 사항: Lambda 응답 크기 축소
+
+**파일**: `stock_crawler_factory.py`
+
+**변경 전**:
+```python
+'body': json.dumps(result_data, ensure_ascii=False, indent=2)  # pretty print
+```
+
+**변경 후**:
+```python
+'body': json.dumps(result_data, ensure_ascii=False)  # indent 제거, compact JSON
+```
+
+**효과**:
+- JSON 응답 크기 감소 (공백, 개행 제거)
+- boto3 HTTP 응답 읽기 속도 향상
+- execution_timeout 내에 완료 가능
+
+#### 적용 방법
+
+1. `stock_crawler_factory.py` 수정 (완료)
+2. ECR에 새 이미지 빌드 및 푸시
+3. Lambda가 새 이미지 사용하도록 대기 또는 재배포
+4. 8개 회사로 테스트
+
+---
+
 ## 🎯 액션 아이템
 
 ### 완료 ✅
 - [x] Lambda 응답 형식을 HTTP 표준 형식으로 수정
 - [x] 회사 목록 쿼리에 `LIMIT 1` 추가하여 1개 회사만 처리
 - [x] 1개 회사 테스트 → Task Success 확인
+- [x] DEFAULT_ARGS에 `execution_timeout: timedelta(minutes=15)` 추가
+- [x] `run_lambda_task` 함수에 `execution_timeout` 파라미터 추가 (기본값 15분)
+- [x] 15분 타임아웃 정상 작동 확인 (15분에 Failed 떨어짐)
+- [x] urllib timeout을 30초 → 180초로 증가
+- [x] 6개 회사 테스트 → Success ✅
 
 ### 진행 중 🔄
-- [ ] **DAG 담당자에게 타임아웃 연장 요청** (내일 진행)
-  - 현재 `execution_timeout` 설정값 확인
-  - 15분(900초)으로 연장 요청
+- [x] **8개 회사 테스트** → Lambda가 시작하지 않음 (CloudWatch 로그 없음)
+  - 패턴 발견: 1개 ✅, 6개 ✅, 8개 ❌
+  - Lambda가 아예 시작하지 않음 (CloudWatch에 로그 없음)
+  - 회사목록 API 응답 크기: ~800바이트 (작음)
+  - 유일한 차이점: LIMIT 1 vs LIMIT 8
+
+### 분석 필요 🔍
+- [ ] **회사목록 Lambda URL의 Athena 쿼리 실행 시간 확인**
+  - LIMIT 1일 때 vs LIMIT 8일 때 쿼리 실행 시간 차이
+  - 회사목록 Lambda가 응답하는데 걸리는 실제 시간 측정
+  - 가능성: Athena 쿼리가 180초를 초과하는지 확인
 
 ### 대기 ⏸️
-- [ ] 타임아웃 연장 후 10개 회사로 전체 테스트
-- [ ] `LIMIT 1` 제거하고 원래대로 복구
+- [ ] 회사목록 Lambda 쿼리 성능 최적화 또는 타임아웃 추가 증가
+- [ ] 전체 회사로 테스트
+- [ ] `LIMIT` 제거하고 원래대로 복구
 - [ ] 정상 동작 확인 후 문서 업데이트
+
+---
+
+## 🔴 병렬 실행 문제 발견 (2025-10-15) - 해결 ✅
+
+### 증상: 하나의 DAG 실행이 두 개의 Lambda를 동시에 실행
+
+**발견 내용:**
+- Quarter DAG 1번 실행하면 2개의 Lambda가 생성됨
+- Quarter Lambda: `2025-10-15 14:57:17 (UTC+09:00)`
+- Annual Lambda: `2025-10-15 14:57:20 (UTC+09:00)`
+- **단 3초 차이로 거의 동시 실행**
+
+### 근본 원인
+
+**잘못된 DAG 설계:**
+- `hds_dap_stock_info_pipeline_annual_v1.py` - Annual 전용 DAG ✅
+- `hds_dap_stock_info_pipeline_annual_quater_v1.py` - **Quarter 전용이어야 하는데 Annual + Quarter 둘 다 실행** ❌
+
+**기존 코드** (`hds_dap_stock_info_pipeline_annual_quater_v1.py`):
+```python
+SPECS = [
+  ("hds_sap_stock_ingest_annual",  "HDS-DAP-DEV-SYS1-STOCK-INFO-CRAWLER-ANNUAL"),   # ❌ 불필요
+  ("hds_sap_stock_ingest_quarter", "HDS-DAP-DEV-SYS1-STOCK-INFO-CRAWLER-QUARTER"),  # ✅ 필요
+]
+
+# 두 개를 병렬 실행
+g_start >> heads  # heads = [annual_task, quarter_task]
+```
+
+**문제점:**
+1. Quarter DAG가 Annual Lambda까지 실행
+2. 두 Lambda가 동시에 회사목록 Lambda URL 호출
+3. boto3가 두 Lambda 응답을 동시에 읽으려다가 막힘
+4. 결과적으로 15분 execution_timeout 발생
+
+### 해결 방법 ✅
+
+**변경 사항**: Quarter DAG는 Quarter Lambda만 실행
+
+```python
+@task_group(group_id="l0_ingestion")
+def tg_l0() -> Ends:
+    # ✅ Quarter만 실행 (Annual은 별도 DAG 파일에서 실행)
+    j0 = run_lambda_task("hds_sap_stock_ingest_quarter",
+                         function_name="HDS-DAP-DEV-SYS1-STOCK-INFO-CRAWLER-QUARTER",
+                         payload=None,
+                         blocking=True)
+
+    return Ends(head=j0.head, tail=j0.tail)
+```
+
+**DAG 역할 분리:**
+```
+hds_dap_stock_info_pipeline_annual_v1.py
+  └─ Annual Lambda만 실행
+
+hds_dap_stock_info_pipeline_annual_quater_v1.py
+  └─ Quarter Lambda만 실행
+```
+
+**효과:**
+- Quarter DAG 실행 시 Quarter Lambda만 실행
+- Annual DAG 실행 시 Annual Lambda만 실행
+- 병렬 실행 없음, boto3 응답 읽기 정상 처리
+- execution_timeout 내에 정상 완료 예상
 
 ---
 

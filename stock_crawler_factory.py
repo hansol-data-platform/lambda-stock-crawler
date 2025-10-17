@@ -60,30 +60,11 @@ def factory_lambda_handler(event, context):
             return handle_annual_crawler(event_with_env, context)
         else:
             print(f"❌ [MWAA] 지원하지 않는 크롤러 타입: {crawler_type}")
-            return {
-                'statusCode': 400,
-                'headers': {
-                    'Content-Type': 'application/json; charset=utf-8'
-                },
-                'body': json.dumps({
-                    'success': False,
-                    'error': f'지원하지 않는 크롤러 타입: {crawler_type}',
-                    'supported_types': ['daily', 'quarter', 'annual']
-                }, ensure_ascii=False, indent=2)
-            }
+            return {'success': False, 'error': f'Unsupported crawler type: {crawler_type}'}
 
     except Exception as e:
         print(f"❌ [MWAA] 팩토리 실행 중 오류: {str(e)}")
-        return {
-            'statusCode': 500,
-            'headers': {
-                'Content-Type': 'application/json; charset=utf-8'
-            },
-            'body': json.dumps({
-                'success': False,
-                'error': f'팩토리 실행 중 오류: {str(e)}'
-            }, ensure_ascii=False, indent=2)
-        }
+        return {'success': False, 'error': str(e)}
 
 
 def handle_daily_crawler(event, context):
@@ -118,7 +99,7 @@ def handle_quarter_crawler(event, context):
             lambda_url = os.environ.get('STOCK_LAMBDA_URL', 'https://rbtvqk5rybgcl63umd5skjnc4i0tqjpl.lambda-url.ap-northeast-2.on.aws/')
             print(f"📋 람다 펑션에서 종목 목록 가져오기: {lambda_url}")
 
-            with urllib.request.urlopen(lambda_url, timeout=30) as response:
+            with urllib.request.urlopen(lambda_url, timeout=180) as response:  # 3분으로 증가
                 response_data = response.read().decode('utf-8')
 
             print(f"🔍 람다 응답 데이터: {response_data[:500]}...")
@@ -151,16 +132,7 @@ def handle_quarter_crawler(event, context):
             print(f"📋 람다 펑션에서 {len(stocks)}개 유효한 종목 로드 완료")
         except Exception as e:
             print(f"❌ [MWAA] 종목 목록 로드 실패: {str(e)}")
-            return {
-                'statusCode': 500,
-                'headers': {
-                    'Content-Type': 'application/json; charset=utf-8'
-                },
-                'body': json.dumps({
-                    'success': False,
-                    'error': f'람다 펑션에서 종목 목록 로드 실패: {str(e)}'
-                }, ensure_ascii=False, indent=2)
-            }
+            return {'success': False, 'error': str(e)}
 
         # 분기별 크롤링 실행
         print("🚀 분기별 재무정보 크롤링 시작")
@@ -205,60 +177,41 @@ def handle_quarter_crawler(event, context):
             finally:
                 new_loop.close()
 
-        # 크롤링 결과를 JSON 직렬화 가능한 형태로 요약
-        if crawl_result:
-            summary_result = {
-                "success": True,
-                "total_companies": len(stocks),
-                "message": f"{len(stocks)}개 회사의 분기별 재무정보 크롤링 완료",
-                "output_directory": output_dir,
-                "s3_bucket": s3_bucket
-            }
-        else:
-            summary_result = {
-                "success": False,
-                "message": "크롤링 실행 중 오류 발생"
-            }
-
-        # S3 업로드 결과
-        s3_upload_result = {
-            "success": True,
-            "message": "S3 업로드는 크롤링 함수 내부에서 처리됨"
-        }
-
-        # MWAA boto3 Lambda invoke 호환 형식으로 반환
+        # MWAA boto3 Lambda invoke 호환 형식으로 반환 (최소 데이터만)
         print("================================================================================")
         print("🎯 [MWAA] Lambda 실행 완료 - 응답 반환")
+
+        # DataFrame 객체는 반환하지 않음 (JSON 직렬화 불가)
+        # crawl_result는 dict of DataFrames이므로 응답에 포함 불가
+        success = crawl_result is not None and len(crawl_result) > 0
+
         result_data = {
-            'success': True,
-            'crawler_type': 'quarter',
-            'crawl_result': summary_result,
-            's3_upload': s3_upload_result,
-            'crawl_time': datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S")
+            'success': success,
+            'count': len(stocks)
         }
+
         print(f"🎯 [MWAA] 응답 데이터: {json.dumps(result_data, ensure_ascii=False)}")
         print("================================================================================")
 
-        return {
-            'statusCode': 200,
-            'headers': {
-                'Content-Type': 'application/json; charset=utf-8'
-            },
-            'body': json.dumps(result_data, ensure_ascii=False, indent=2)
-        }
-        
+        # 모든 이벤트 루프 정리 (Lambda 종료 보장)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop and not loop.is_closed():
+                pending = asyncio.all_tasks(loop)
+                if pending:
+                    print(f"🔄 [MWAA] {len(pending)}개 미완료 태스크 정리 중...")
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        except Exception as e:
+            print(f"⚠️ [MWAA] 이벤트 루프 정리 중 오류 (무시): {e}")
+
+        print("✅ [MWAA] Lambda 핸들러 반환 직전 - Quarter")
+
+        # boto3 SDK invoke 호환: 직접 dict 반환 (statusCode/body 래핑 제거)
+        return result_data
+
     except Exception as e:
         print(f"❌ [MWAA] 분기별 크롤러 실행 중 오류: {str(e)}")
-        return {
-            'statusCode': 500,
-            'headers': {
-                'Content-Type': 'application/json; charset=utf-8'
-            },
-            'body': json.dumps({
-                'success': False,
-                'error': f'분기별 크롤러 실행 중 오류: {str(e)}'
-            }, ensure_ascii=False, indent=2)
-        }
+        return {'success': False, 'error': str(e)}
 
 
 def handle_annual_crawler(event, context):
@@ -280,7 +233,7 @@ def handle_annual_crawler(event, context):
             lambda_url = os.environ.get('STOCK_LAMBDA_URL', 'https://rbtvqk5rybgcl63umd5skjnc4i0tqjpl.lambda-url.ap-northeast-2.on.aws/')
             print(f"📋 람다 펑션에서 종목 목록 가져오기: {lambda_url}")
 
-            with urllib.request.urlopen(lambda_url, timeout=30) as response:
+            with urllib.request.urlopen(lambda_url, timeout=180) as response:  # 3분으로 증가
                 response_data = response.read().decode('utf-8')
 
             print(f"🔍 람다 응답 데이터: {response_data[:500]}...")
@@ -313,16 +266,7 @@ def handle_annual_crawler(event, context):
             print(f"📋 람다 펑션에서 {len(stocks)}개 유효한 종목 로드 완료")
         except Exception as e:
             print(f"❌ [MWAA] 종목 목록 로드 실패: {str(e)}")
-            return {
-                'statusCode': 500,
-                'headers': {
-                    'Content-Type': 'application/json; charset=utf-8'
-                },
-                'body': json.dumps({
-                    'success': False,
-                    'error': f'람다 펑션에서 종목 목록 로드 실패: {str(e)}'
-                }, ensure_ascii=False, indent=2)
-            }
+            return {'success': False, 'error': str(e)}
 
         # 연간 크롤링 실행
         print("🚀 연간 재무정보 크롤링 시작")
@@ -367,60 +311,41 @@ def handle_annual_crawler(event, context):
             finally:
                 new_loop.close()
 
-        # 크롤링 결과를 JSON 직렬화 가능한 형태로 요약
-        if crawl_result:
-            summary_result = {
-                "success": True,
-                "total_companies": len(stocks),
-                "message": f"{len(stocks)}개 회사의 연간 재무정보 크롤링 완료",
-                "output_directory": output_dir,
-                "s3_bucket": s3_bucket
-            }
-        else:
-            summary_result = {
-                "success": False,
-                "message": "크롤링 실행 중 오류 발생"
-            }
-
-        # S3 업로드 결과
-        s3_upload_result = {
-            "success": True,
-            "message": "S3 업로드는 크롤링 함수 내부에서 처리됨"
-        }
-
-        # MWAA boto3 Lambda invoke 호환 형식으로 반환
+        # MWAA boto3 Lambda invoke 호환 형식으로 반환 (최소 데이터만)
         print("================================================================================")
         print("🎯 [MWAA] Lambda 실행 완료 - 응답 반환")
+
+        # DataFrame 객체는 반환하지 않음 (JSON 직렬화 불가)
+        # crawl_result는 dict of DataFrames이므로 응답에 포함 불가
+        success = crawl_result is not None and len(crawl_result) > 0
+
         result_data = {
-            'success': True,
-            'crawler_type': 'annual',
-            'crawl_result': summary_result,
-            's3_upload': s3_upload_result,
-            'crawl_time': datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S")
+            'success': success,
+            'count': len(stocks)
         }
+
         print(f"🎯 [MWAA] 응답 데이터: {json.dumps(result_data, ensure_ascii=False)}")
         print("================================================================================")
 
-        return {
-            'statusCode': 200,
-            'headers': {
-                'Content-Type': 'application/json; charset=utf-8'
-            },
-            'body': json.dumps(result_data, ensure_ascii=False, indent=2)
-        }
-        
+        # 모든 이벤트 루프 정리 (Lambda 종료 보장)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop and not loop.is_closed():
+                pending = asyncio.all_tasks(loop)
+                if pending:
+                    print(f"🔄 [MWAA] {len(pending)}개 미완료 태스크 정리 중...")
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        except Exception as e:
+            print(f"⚠️ [MWAA] 이벤트 루프 정리 중 오류 (무시): {e}")
+
+        print("✅ [MWAA] Lambda 핸들러 반환 직전 - Annual")
+
+        # boto3 SDK invoke 호환: 직접 dict 반환 (statusCode/body 래핑 제거)
+        return result_data
+
     except Exception as e:
         print(f"❌ [MWAA] 연간 크롤러 실행 중 오류: {str(e)}")
-        return {
-            'statusCode': 500,
-            'headers': {
-                'Content-Type': 'application/json; charset=utf-8'
-            },
-            'body': json.dumps({
-                'success': False,
-                'error': f'연간 크롤러 실행 중 오류: {str(e)}'
-            }, ensure_ascii=False, indent=2)
-        }
+        return {'success': False, 'error': str(e)}
 
 
 if __name__ == "__main__":
